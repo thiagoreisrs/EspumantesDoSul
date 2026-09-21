@@ -1,0 +1,68 @@
+# Deploy do agente de atendimento.
+#
+# Serve para dois cenários:
+#   1. rodar localmente ou numa VPS sua:  docker compose up -d --build
+#   2. Coolify com o build pack "Docker Compose"
+#
+# No Coolify, o caminho recomendado é o build pack "Dockerfile" (mais simples,
+# a plataforma cuida de domínio, TLS e healthcheck pela UI). Use este arquivo lá
+# apenas se preferir declarar tudo no repositório — nesse caso descomente a
+# variável SERVICE_FQDN_* abaixo e remova o bloco `ports`, porque quem publica a
+# porta é o proxy do Coolify.
+
+services:
+  agente:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: espumantes-atendimento-agent:latest
+    restart: unless-stopped
+
+    # Todos os segredos e ajustes vêm daqui. Copie .env.example para .env.
+    # Marcado como opcional porque no Coolify as variáveis vêm da UI e o
+    # arquivo não existe no checkout — sem isso o deploy falha ao subir.
+    env_file:
+      - path: .env
+        required: false
+
+    environment:
+      # Precisa apontar para dentro do volume persistente, senão o refresh
+      # token rotativo da Olist se perde no primeiro redeploy.
+      OLIST_TOKEN_STORE: /data/.olist-token.json
+      PORT: "3000"
+      HOST: 0.0.0.0
+      # Coolify: descomente para que a plataforma gere o domínio e o TLS.
+      # O nome segue o padrão SERVICE_FQDN_<SERVIÇO>_<PORTA>.
+      # SERVICE_FQDN_AGENTE_3000: /
+
+    # Remova este bloco ao rodar atrás do proxy do Coolify.
+    ports:
+      - "3000:3000"
+
+    volumes:
+      # Estado do OAuth da Olist. Obrigatório.
+      - olist-data:/data
+      # Opcional: permite editar as políticas da loja sem rebuild da imagem.
+      # Depois de editar, reinicie o container para recarregar.
+      # - ./knowledge/politicas.md:/app/knowledge/politicas.md:ro
+
+    healthcheck:
+      # A imagem é alpine sem curl; o Node 22 já tem fetch global.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  olist-data:
