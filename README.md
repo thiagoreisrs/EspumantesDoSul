@@ -143,11 +143,18 @@ cobre repositório privado, deploy automático a cada push e build a partir do
 | Campo | Valor |
 |---|---|
 | Source | GitHub App → `thiagoreisrs/EspumantesDoSul` |
-| Branch | `main` |
+| Branch | `main` (só depois que o código estiver mergeado nela — ver aviso abaixo) |
 | Build Pack | **Dockerfile** |
 | Ports Exposes | `3000` |
 | Health Check Path | `/health` |
 | Domínio | um subdomínio seu, com HTTPS ativado |
+
+> **Aponte o Coolify para um branch que tenha o código.** O `main` deste
+> repositório nasceu de um commit inicial vazio, para servir de base ao primeiro
+> pull request. Enquanto esse PR não for mergeado, um deploy de `main` falha com
+> `failed to read dockerfile: open Dockerfile: no such file or directory` — não é
+> problema do Dockerfile, é o branch que não tem arquivo nenhum. Confirme com
+> `git ls-tree --name-only origin/main` antes do primeiro deploy.
 
 Dois pontos que quebram em produção se forem pulados:
 
@@ -280,5 +287,6 @@ src/
 knowledge/politicas.md   ← preencher: políticas da loja
 scripts/olist-consent.mjs  consentimento OAuth inicial (roda uma vez)
 Dockerfile               build multi-stage, roda como usuário sem privilégio
+.dockerignore            mantém .env e node_modules fora do contexto de build
 docker-compose.yml       deploy em VPS própria, local, ou Coolify via Compose
 ```

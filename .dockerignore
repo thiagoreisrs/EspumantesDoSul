@@ -1,0 +1,21 @@
+# Contexto de build enxuto: acelera o build e, principalmente, garante que
+# segredos e artefatos locais nunca entrem na imagem.
+.env
+.env.*
+!.env.example
+.olist-token.json
+
+node_modules
+dist
+coverage
+
+.git
+.gitignore
+.github
+
+test
+vitest.config.*
+docker-compose.yml
+README.md
+*.log
+.DS_Store
