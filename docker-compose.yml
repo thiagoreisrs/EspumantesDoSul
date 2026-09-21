@@ -46,17 +46,14 @@ services:
       # Depois de editar, reinicie o container para recarregar.
       # - ./knowledge/politicas.md:/app/knowledge/politicas.md:ro
 
+    # A imagem já declara o próprio HEALTHCHECK; este bloco só existe para
+    # tornar o comportamento explícito a quem lê o compose.
     healthcheck:
-      # A imagem é alpine sem curl; o Node 22 já tem fetch global.
-      test:
-        - CMD
-        - node
-        - -e
-        - "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/health"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 20s
 
     logging:
       driver: json-file

@@ -166,6 +166,16 @@ Dois pontos que quebram em produção se forem pulados:
    com TLS.
 
 As demais variáveis são as de `.env.example`, cadastradas na UI do Coolify.
+Sete são obrigatórias e o container não sobe sem elas — `ANTHROPIC_API_KEY`,
+`CHATWOOT_BASE_URL`, `CHATWOOT_ACCOUNT_ID`, `CHATWOOT_BOT_TOKEN`,
+`CHATWOOT_WEBHOOK_SECRET`, `SHOPIFY_SHOP_DOMAIN` e `SHOPIFY_ADMIN_TOKEN`. Deixe
+`OLIST_ENABLED=false` enquanto não tiver o refresh token do ERP, senão o boot
+falha de propósito. Variável cadastrada e deixada em branco é tratada como não
+informada, então um campo vazio cai no default em vez de derrubar a subida.
+
+O healthcheck do Coolify roda `curl` de dentro do container — a imagem já
+instala `curl` e declara o próprio `HEALTHCHECK` em `/health`. Sem isso o deploy
+marcaria a aplicação como *unhealthy* e faria rollback mesmo com o app no ar.
 
 > **`knowledge/politicas.md` é assado na imagem.** Com build por Dockerfile,
 > editar as políticas exige rebuild. Para editar sem redeploy, monte também um
@@ -239,12 +249,10 @@ de evento e agendamento), `docker compose config` válido, e o comando de
 healthcheck testado nos dois estados (sai 0 com o servidor no ar, 1 com ele
 parado).
 
-O que **não foi exercitado**:
-
-- **`docker build`.** Não havia daemon Docker no ambiente onde o projeto foi
-  escrito, então a imagem nunca foi construída. O runtime foi testado
-  diretamente (`node dist/index.js`), mas rode um `docker build` local antes de
-  apontar o Coolify para cá.
+A imagem **foi construída com sucesso** num deploy real no Coolify, e o
+container sobe e executa. A validação de configuração funcionou como desenhada:
+sem os segredos, o processo morre no boot listando exatamente o que falta, em
+vez de subir quebrado.
 
 O que **ainda não foi exercitado contra as APIs reais**, por não haver
 credenciais aqui:
