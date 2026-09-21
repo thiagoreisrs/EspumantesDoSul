@@ -1,6 +1,26 @@
 import { z } from "zod";
 
 /**
+ * Inteiro vindo do ambiente.
+ *
+ * `z.coerce.number()` converte ausência em NaN, e o erro sai como
+ * "Expected number, received nan" — que manda quem está lendo o log do deploy
+ * caçar um valor malformado quando o problema é a variável não existir. Este
+ * helper preserva a distinção entre "não informado" e "informado errado".
+ */
+function intEnv(opts: { min?: number; optional?: boolean } = {}) {
+  const { min = 1, optional = false } = opts;
+  const base = z
+    .number({ required_error: "Required", invalid_type_error: "Esperado um número inteiro" })
+    .int("Esperado um número inteiro")
+    .min(min, `Esperado um número inteiro maior ou igual a ${min}`);
+  return z.preprocess(
+    (v) => (v === undefined || v === null || v === "" ? undefined : Number(v)),
+    optional ? base.optional() : base,
+  );
+}
+
+/**
  * Toda a configuração do agente vem de variáveis de ambiente e é validada na
  * subida do processo. Falhar aqui é melhor do que descobrir um segredo ausente
  * no meio de um atendimento.
@@ -23,7 +43,7 @@ const schema = z.object({
 
   // ---- Chatwoot ----
   CHATWOOT_BASE_URL: z.string().url(),
-  CHATWOOT_ACCOUNT_ID: z.coerce.number().int().positive(),
+  CHATWOOT_ACCOUNT_ID: intEnv(),
   /** Token de acesso de um Agent Bot (Configurações > Agent Bots). */
   CHATWOOT_BOT_TOKEN: z.string().min(1),
   /**
@@ -43,7 +63,7 @@ const schema = z.object({
         .map(Number),
     ),
   /** Time para onde a conversa é encaminhada ao escalar. Vazio = só abre a conversa. */
-  CHATWOOT_HANDOFF_TEAM_ID: z.coerce.number().int().positive().optional(),
+  CHATWOOT_HANDOFF_TEAM_ID: intEnv({ optional: true }),
   /** Rótulo aplicado em conversas escaladas pelo bot. */
   CHATWOOT_ESCALATION_LABEL: z.string().default("escalado-bot"),
   /** Rótulo que, se presente na conversa, silencia o bot permanentemente. */
@@ -100,8 +120,22 @@ export type Config = z.infer<typeof schema>;
 
 let cached: Config | null = null;
 
+/**
+ * Painéis de deploy como o Coolify entregam variável cadastrada e não
+ * preenchida como string vazia, não como ausente. Sem isto, `PORT=""` vira 0 e
+ * `CHATWOOT_HANDOFF_TEAM_ID=""` derruba a subida — em vez de simplesmente
+ * caírem no default ou em "não informado".
+ */
+function dropEmpty(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== "") out[key] = value;
+  }
+  return out;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const parsed = schema.safeParse(env);
+  const parsed = schema.safeParse(dropEmpty(env));
   if (!parsed.success) {
     const issues = parsed.error.issues
       .map((i) => `  - ${i.path.join(".") || "(raiz)"}: ${i.message}`)
