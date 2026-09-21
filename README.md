@@ -128,16 +128,77 @@ npm run typecheck
 npm run build && npm start
 ```
 
-Docker:
-
-```bash
-docker build -t espumantes-agent .
-docker run -p 3000:3000 --env-file .env -v espumantes-data:/data espumantes-agent
-```
-
 Em desenvolvimento, exponha o serviço para o Chatwoot com um túnel
 (`cloudflared tunnel --url http://localhost:3000` ou ngrok) e aponte a URL do bot
 para o túnel.
+
+## Deploy
+
+### Coolify (recomendado)
+
+Crie a aplicação como **Git Repository (with GitHub App)** — é a única opção que
+cobre repositório privado, deploy automático a cada push e build a partir do
+`Dockerfile` do repositório.
+
+| Campo | Valor |
+|---|---|
+| Source | GitHub App → `thiagoreisrs/EspumantesDoSul` |
+| Branch | `main` |
+| Build Pack | **Dockerfile** |
+| Ports Exposes | `3000` |
+| Health Check Path | `/health` |
+| Domínio | um subdomínio seu, com HTTPS ativado |
+
+Dois pontos que quebram em produção se forem pulados:
+
+1. **Volume persistente em `/data`.** Em *Storages*, monte um volume para
+   `/data` e mantenha `OLIST_TOKEN_STORE=/data/.olist-token.json`. O refresh
+   token da Olist é rotativo: sem volume, o acesso ao ERP morre no primeiro
+   redeploy.
+2. **HTTPS é obrigatório.** O Chatwoot só entrega webhook para endpoint público
+   com TLS.
+
+As demais variáveis são as de `.env.example`, cadastradas na UI do Coolify.
+
+> **`knowledge/politicas.md` é assado na imagem.** Com build por Dockerfile,
+> editar as políticas exige rebuild. Para editar sem redeploy, monte também um
+> volume de arquivo apontando para `/app/knowledge/politicas.md` e reinicie o
+> container depois de editar.
+
+Se preferir declarar tudo no repositório, o build pack **Docker Compose** também
+funciona com o `docker-compose.yml` incluído — nesse caso remova o bloco `ports`
+e descomente `SERVICE_FQDN_AGENTE_3000`, porque quem publica a porta passa a ser
+o proxy do Coolify.
+
+### Docker Compose (VPS própria ou máquina local)
+
+```bash
+cp .env.example .env    # preencha os segredos
+docker compose up -d --build
+docker compose logs -f agente
+```
+
+O arquivo já traz volume nomeado para `/data`, `restart: unless-stopped`,
+rotação de log e healthcheck em `/health`. Para editar as políticas da loja sem
+rebuild, descomente o bind mount de `knowledge/politicas.md`.
+
+### Depois do deploy
+
+1. Confirme a saúde: `curl https://seu-dominio/health` deve devolver
+   `{"status":"ok",...}`.
+2. No Chatwoot, configure a URL do Agent Bot como
+   `https://seu-dominio/webhooks/chatwoot/<CHATWOOT_WEBHOOK_SECRET>`.
+3. Valide que a autenticação do webhook está de pé — um segredo errado precisa
+   devolver `401`:
+
+   ```bash
+   curl -o /dev/null -w "%{http_code}\n" -X POST \
+     https://seu-dominio/webhooks/chatwoot/errado \
+     -H 'content-type: application/json' -d '{}'
+   ```
+
+4. Rode o consentimento da Olist (uma vez) e cadastre o `OLIST_REFRESH_TOKEN`.
+5. Mande uma mensagem de teste na inbox e acompanhe os logs.
 
 ## Operação do dia a dia
 
@@ -166,8 +227,17 @@ seguidas, algo passou a variar no prefixo — é o sinal de que o cache quebrou.
 ## Estado de verificação
 
 O que foi **verificado nesta máquina**: typecheck limpo, 32 testes passando,
-build, e smoke test do servidor (health, rejeição de segredo inválido, filtragem
-de evento e agendamento).
+build, smoke test do servidor (health, rejeição de segredo inválido, filtragem
+de evento e agendamento), `docker compose config` válido, e o comando de
+healthcheck testado nos dois estados (sai 0 com o servidor no ar, 1 com ele
+parado).
+
+O que **não foi exercitado**:
+
+- **`docker build`.** Não havia daemon Docker no ambiente onde o projeto foi
+  escrito, então a imagem nunca foi construída. O runtime foi testado
+  diretamente (`node dist/index.js`), mas rode um `docker build` local antes de
+  apontar o Coolify para cá.
 
 O que **ainda não foi exercitado contra as APIs reais**, por não haver
 credenciais aqui:
@@ -209,4 +279,6 @@ src/
     scheduler.ts         agrupamento e trava por conversa
 knowledge/politicas.md   ← preencher: políticas da loja
 scripts/olist-consent.mjs  consentimento OAuth inicial (roda uma vez)
+Dockerfile               build multi-stage, roda como usuário sem privilégio
+docker-compose.yml       deploy em VPS própria, local, ou Coolify via Compose
 ```
