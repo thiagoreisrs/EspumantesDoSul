@@ -270,3 +270,86 @@ describe("buscar_produto", () => {
     expect(consulta).not.toMatch(/[a-z]"[a-z]/);
   });
 });
+
+describe("buscar_produto com metacampos", () => {
+  const comMeta = (nome: string, preco: number, metafields: ShopifyProduct["metafields"]) =>
+    produtoShopify(nome, preco, { productType: null, tags: [], metafields });
+
+  const guatambu = comMeta("Guatambu Épico IX", 189, {
+    nodes: [
+      { namespace: "custom", key: "tipo", type: "single_line_text_field", value: "Vinho Fino Tinto Seco" },
+      { namespace: "custom", key: "docura_texto", type: "single_line_text_field", value: "Brut" },
+      {
+        namespace: "custom",
+        key: "harmonizacao",
+        type: "list.single_line_text_field",
+        value: JSON.stringify(["Costela de fogo de chão"]),
+      },
+      {
+        namespace: "custom",
+        key: "ocasiao",
+        type: "list.single_line_text_field",
+        value: JSON.stringify(["Jantar Especial", "Celebração"]),
+      },
+      { namespace: "custom", key: "uvas", type: "list.single_line_text_field", value: JSON.stringify(["Tannat"]) },
+      { namespace: "custom", key: "regiao", type: "single_line_text_field", value: "Campanha Gaúcha" },
+      { namespace: "custom", key: "temperatura", type: "single_line_text_field", value: "18 °C a 20 °C" },
+    ],
+  });
+
+  const moscatel = comMeta("Dalla Costa Moscatel", 170, {
+    nodes: [
+      { namespace: "custom", key: "docura_texto", type: "single_line_text_field", value: "Moscatel" },
+      {
+        namespace: "custom",
+        key: "harmonizacao",
+        type: "list.single_line_text_field",
+        value: JSON.stringify(["Sobremesas", "Torta de frutas"]),
+      },
+    ],
+  });
+
+  it("filtra pelo prato que o cliente citou", async () => {
+    const { ctx } = contextoProduto([guatambu, moscatel]);
+    const out = JSON.parse(
+      await executeTool("buscar_produto", { termo: "vinho", harmonizacao: "costela", preco_alvo: 180 }, ctx),
+    );
+    const nomes = out.produtos.map((p: { nome: string }) => p.nome);
+    expect(nomes).toEqual(["Guatambu Épico IX"]);
+  });
+
+  it("filtra por ocasião", async () => {
+    const { ctx } = contextoProduto([guatambu, moscatel]);
+    const out = JSON.parse(
+      await executeTool("buscar_produto", { termo: "vinho", ocasiao: "Celebração", preco_alvo: 180 }, ctx),
+    );
+    expect(out.produtos.map((p: { nome: string }) => p.nome)).toEqual(["Guatambu Épico IX"]);
+  });
+
+  it("entrega a ficha técnica junto, para a indicação ter argumento", async () => {
+    const { ctx } = contextoProduto([guatambu]);
+    const out = JSON.parse(await executeTool("buscar_produto", { termo: "vinho", preco_alvo: 180 }, ctx));
+    const p = out.produtos[0];
+    expect(p.tipo).toBe("Vinho Fino Tinto Seco");
+    expect(p.regiao).toBe("Campanha Gaúcha");
+    expect(p.temperatura).toBe("18 °C a 20 °C");
+    expect(p.uvas).toEqual(["Tannat"]);
+    expect(p.harmoniza_com).toContain("Costela de fogo de chão");
+  });
+
+  it("'seco' do cliente usa a ficha e não entrega o moscatel", async () => {
+    const { ctx } = contextoProduto([guatambu, moscatel]);
+    const out = JSON.parse(
+      await executeTool("buscar_produto", { termo: "vinho", tipo: "seco", preco_alvo: 180 }, ctx),
+    );
+    expect(out.produtos.map((p: { nome: string }) => p.nome)).toEqual(["Guatambu Épico IX"]);
+  });
+
+  it("oferece as ocasiões reais ao pedir qualificação", async () => {
+    const catalogo = [...CATALOGO_LARGO.slice(0, 6), guatambu];
+    const { ctx } = contextoProduto(catalogo);
+    const out = JSON.parse(await executeTool("buscar_produto", { termo: "vinho" }, ctx));
+    expect(out.precisa_qualificar).toBe(true);
+    expect(out.ocasioes_disponiveis).toContain("Jantar Especial");
+  });
+});

@@ -1,4 +1,5 @@
 import type { ShopifyProduct } from "../shopify/client.js";
+import { lerMetacampos } from "../shopify/metacampos.js";
 
 export interface FaixaPreco {
   /** Nenhum produto abaixo disto é oferecido. */
@@ -194,7 +195,13 @@ function semAcento(valor: string): string {
  * hora de perguntar "seco ou doce?".
  */
 export function classificarEstilos(produto: ShopifyProduct): string[] {
-  const fonte = semAcento([produto.title, produto.productType ?? "", ...produto.tags].join(" | "));
+  const meta = lerMetacampos(produto);
+  // O metacampo "Tipo" ("Vinho Fino Tinto Seco") é a fonte boa. A doçura NÃO
+  // entra aqui: a loja usa "Brut" como nível de doçura mesmo em tinto, e quem
+  // pede "um brut" quer espumante, não um Tannat.
+  const fonte = semAcento(
+    [produto.title, meta.tipo ?? "", produto.productType ?? "", ...produto.tags].join(" | "),
+  );
 
   const achados: string[] = [];
   for (const { rotulo, termos } of ESTILOS) {
@@ -221,13 +228,68 @@ export function classificarEstilos(produto: ShopifyProduct): string[] {
  * ou Nature. Sem esta tradução, a resposta mais provável do cliente traria só
  * metade do catálogo que serve para ele.
  */
-const SINONIMOS: Array<{ termos: string[]; estilos: string[] }> = [
+const SINONIMOS: Array<{ rotulo: "seco" | "doce"; termos: string[]; estilos: string[] }> = [
   {
+    rotulo: "seco",
     termos: ["seco", "mais seco", "bem seco", "dry", "menos doce", "nao doce"],
     estilos: ["Seco", "Brut", "Extra Brut", "Nature"],
   },
-  { termos: ["doce", "docinho", "adocicado", "mais doce", "suave", "dulce"], estilos: ["Moscatel", "Demi-Sec"] },
+  {
+    rotulo: "doce",
+    termos: ["doce", "docinho", "adocicado", "mais doce", "suave", "dulce"],
+    estilos: ["Moscatel", "Demi-Sec"],
+  },
 ];
+
+/** Vocabulário que a loja usa no metacampo de doçura, do mais seco ao mais doce. */
+const DOCURA_SECA = ["nature", "extra brut", "brut", "seco"];
+const DOCURA_DOCE = ["moscatel", "moscato", "demi", "suave", "doce", "meio seco"];
+
+/**
+ * Limiares da escala numérica de doçura da loja (0 a 100; o Guatambu seco
+ * marca 5). O texto é consultado antes, porque é o dado que a loja escreve à
+ * mão; estes números são a segunda opção e o ponto a ajustar se a escala
+ * mudar.
+ */
+const DOCURA_NIVEL_SECO = 25;
+const DOCURA_NIVEL_DOCE = 45;
+
+/**
+ * Responde "seco ou doce?" pelo metacampo de doçura, que é a fonte boa.
+ * Devolve null quando o produto não tem o dado — aí quem decide é a tag.
+ */
+function docuraCombina(produto: ShopifyProduct, querSeco: "seco" | "doce"): boolean | null {
+  const meta = lerMetacampos(produto);
+
+  if (meta.docuraTexto) {
+    const texto = semAcento(meta.docuraTexto);
+    const ehSeco = DOCURA_SECA.some((t) => texto.includes(semAcento(t)));
+    const ehDoce = DOCURA_DOCE.some((t) => texto.includes(semAcento(t)));
+    // "meio seco" contém "seco": doce vence, porque é o mais específico.
+    if (ehDoce) return querSeco === "doce";
+    if (ehSeco) return querSeco === "seco";
+  }
+
+  if (meta.docuraNivel !== null) {
+    if (meta.docuraNivel <= DOCURA_NIVEL_SECO) return querSeco === "seco";
+    if (meta.docuraNivel >= DOCURA_NIVEL_DOCE) return querSeco === "doce";
+    return false; // meio-termo não é nem uma coisa nem outra
+  }
+
+  return null;
+}
+
+/** O produto serve para a ocasião, o prato ou a uva que o cliente citou? */
+export function combinaComTexto(produto: ShopifyProduct, campo: "ocasioes" | "harmonizacoes" | "uvas", pedido: string): boolean {
+  const alvo = semAcento(pedido).trim();
+  if (!alvo) return true;
+  const valores = lerMetacampos(produto)[campo];
+  if (valores.length === 0) return false;
+  return valores.some((v) => {
+    const normalizado = semAcento(v);
+    return normalizado.includes(alvo) || alvo.includes(normalizado);
+  });
+}
 
 /** O estilo pedido pelo cliente bate com o que o produto é? */
 export function combinaComEstilo(produto: ShopifyProduct, estiloPedido: string): boolean {
@@ -239,7 +301,11 @@ export function combinaComEstilo(produto: ShopifyProduct, estiloPedido: string):
   // Sinônimo decide sozinho: "seco" NÃO pode cair na rede de segurança abaixo
   // e casar com "meio seco", que é justamente o oposto.
   const grupo = SINONIMOS.find((g) => g.termos.some((t) => t === pedido));
-  if (grupo) return estilos.some((e) => grupo.estilos.includes(e));
+  if (grupo) {
+    const doMetacampo = docuraCombina(produto, grupo.rotulo);
+    if (doMetacampo !== null) return doMetacampo;
+    return estilos.some((e) => grupo.estilos.includes(e));
+  }
 
   const normalizados = estilos.map(semAcento);
   if (normalizados.some((e) => e === pedido || e.includes(pedido) || pedido.includes(e))) return true;
@@ -253,6 +319,7 @@ export function combinaComEstilo(produto: ShopifyProduct, estiloPedido: string):
 export interface Facetas {
   vinicolas: string[];
   tipos: string[];
+  ocasioes: string[];
   precoMin: number | null;
   precoMax: number | null;
 }
@@ -265,6 +332,7 @@ export interface Facetas {
 export function levantarFacetas(produtos: ShopifyProduct[]): Facetas {
   const vinicolas = new Set<string>();
   const tipos = new Set<string>();
+  const ocasioes = new Set<string>();
   let precoMin: number | null = null;
   let precoMax: number | null = null;
 
@@ -272,6 +340,7 @@ export function levantarFacetas(produtos: ShopifyProduct[]): Facetas {
     if (produto.status !== "ACTIVE") continue;
     if (produto.vendor) vinicolas.add(produto.vendor);
     for (const estilo of classificarEstilos(produto)) tipos.add(estilo);
+    for (const ocasiao of lerMetacampos(produto).ocasioes) ocasioes.add(ocasiao);
     for (const variante of produto.variants.nodes) {
       if (!variante.availableForSale) continue;
       const preco = Number(variante.price);
@@ -284,6 +353,7 @@ export function levantarFacetas(produtos: ShopifyProduct[]): Facetas {
   return {
     vinicolas: [...vinicolas].sort(),
     tipos: [...tipos].sort(),
+    ocasioes: [...ocasioes].sort(),
     precoMin,
     precoMax,
   };
