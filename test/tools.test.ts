@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { executeTool, isOrderOwnedByContact, type AgentOutcome, type ToolContext } from "../src/agent/tools.js";
-import type { ShopifyClient, ShopifyOrder } from "../src/shopify/client.js";
+import type { ShopifyClient, ShopifyOrder, ShopifyProduct } from "../src/shopify/client.js";
 
 function pedido(overrides: Partial<ShopifyOrder> = {}): ShopifyOrder {
   return {
@@ -126,5 +126,123 @@ describe("escalar_para_humano / nao_responder", () => {
     const { ctx, outcome } = contexto([], { phone: null, email: null });
     await executeTool("nao_responder", { motivo: "spam" }, ctx);
     expect(outcome.stayQuiet).toEqual({ motivo: "spam" });
+  });
+});
+
+// --------------------------------------------------------- buscar_produto --
+
+function produtoShopify(
+  nome: string,
+  preco: number,
+  extra: Partial<ShopifyProduct> = {},
+): ShopifyProduct {
+  return {
+    title: nome,
+    handle: nome.toLowerCase().replace(/\s+/g, "-"),
+    status: "ACTIVE",
+    vendor: "Vinícola Teste",
+    productType: "Brut",
+    tags: [],
+    onlineStoreUrl: `https://loja/${nome}`,
+    totalInventory: 10,
+    description: null,
+    priceRangeV2: { minVariantPrice: { amount: String(preco), currencyCode: "BRL" } },
+    variants: {
+      nodes: [
+        { title: "Garrafa", sku: `SKU-${nome}`, price: String(preco), availableForSale: true, inventoryQuantity: 5 },
+      ],
+    },
+    ...extra,
+  };
+}
+
+function contextoProduto(produtos: ShopifyProduct[]) {
+  const outcome: AgentOutcome = { escalate: null, stayQuiet: null, toolsUsed: [] };
+  const searchProducts = vi.fn().mockResolvedValue(produtos);
+  const ctx: ToolContext = {
+    shopify: { searchOrders: vi.fn(), searchProducts } as unknown as ShopifyClient,
+    olist: null,
+    contact: { phone: "+5551999998888", email: null },
+    outcome,
+  };
+  return { ctx, searchProducts };
+}
+
+const CATALOGO_LARGO = [
+  produtoShopify("Barato 30", 30),
+  produtoShopify("Barato 55", 55),
+  produtoShopify("Medio 120", 120),
+  produtoShopify("Justo 150", 150),
+  produtoShopify("Justo 160", 160),
+  produtoShopify("Caro 400", 400),
+  produtoShopify("Caro 600", 600),
+];
+
+describe("buscar_produto", () => {
+  it("pede para qualificar em vez de listar quando o cliente não deu critério", async () => {
+    const { ctx } = contextoProduto(CATALOGO_LARGO);
+    const out = JSON.parse(await executeTool("buscar_produto", { termo: "espumante" }, ctx));
+
+    expect(out.precisa_qualificar).toBe(true);
+    expect(out.produtos).toBeUndefined();
+    expect(out.instrucao).toMatch(/NÃO liste produtos ainda/);
+    // Precisa devolver o que existe, senão o agente pergunta no escuro.
+    expect(out.tipos_disponiveis).toContain("Brut");
+    expect(out.faixa_de_preco_no_catalogo).toEqual({ min: 30, max: 600 });
+  });
+
+  it("lista direto quando o cliente já foi específico, sem interrogar", async () => {
+    const { ctx } = contextoProduto([produtoShopify("Chandon Brut", 120)]);
+    const out = JSON.parse(await executeTool("buscar_produto", { termo: "Chandon Brut" }, ctx));
+
+    expect(out.precisa_qualificar).toBeUndefined();
+    expect(out.encontrado).toBe(true);
+    expect(out.produtos[0].nome).toBe("Chandon Brut");
+  });
+
+  it("não devolve opções muito abaixo da faixa pedida", async () => {
+    // O caso real: cliente pediu R$150 e recebeu sugestões de R$30.
+    const { ctx } = contextoProduto(CATALOGO_LARGO);
+    const out = JSON.parse(await executeTool("buscar_produto", { termo: "espumante", preco_alvo: 150 }, ctx));
+
+    const nomes = out.produtos.map((p: { nome: string }) => p.nome);
+    expect(nomes).not.toContain("Barato 30");
+    expect(nomes).not.toContain("Barato 55");
+    expect(nomes[0]).toBe("Justo 150");
+    expect(out.produtos.every((p: { preco: number }) => p.preco >= 105 && p.preco <= 165)).toBe(true);
+    expect(out.descartados_por_preco).toBe(4);
+  });
+
+  it("respeita teto declarado sem oferecer acima", async () => {
+    const { ctx } = contextoProduto(CATALOGO_LARGO);
+    const out = JSON.parse(await executeTool("buscar_produto", { termo: "espumante", preco_max: 150 }, ctx));
+    expect(out.produtos.every((p: { preco: number }) => p.preco <= 150)).toBe(true);
+  });
+
+  it("admite que não tem nada na faixa em vez de empurrar o barato", async () => {
+    const { ctx } = contextoProduto([produtoShopify("Barato 30", 30), produtoShopify("Barato 40", 40)]);
+    const out = JSON.parse(await executeTool("buscar_produto", { termo: "espumante", preco_alvo: 300 }, ctx));
+
+    expect(out.encontrado).toBe(false);
+    expect(out.motivo).toBe("nada_na_faixa");
+    expect(out.opcao_mais_proxima.nome).toBe("Barato 40");
+    expect(out.instrucao).toMatch(/NÃO empurre/);
+  });
+
+  it("repassa vinícola e tipo para a consulta do Shopify", async () => {
+    const { ctx, searchProducts } = contextoProduto([produtoShopify("Aurora Moscatel", 90)]);
+    await executeTool(
+      "buscar_produto",
+      { termo: "espumante", vinicola: "Aurora", tipo: "Moscatel", preco_alvo: 90 },
+      ctx,
+    );
+    expect(searchProducts).toHaveBeenCalledWith('espumante vendor:"Aurora" product_type:"Moscatel"', 25);
+  });
+
+  it("neutraliza aspas para não quebrar a sintaxe da busca", async () => {
+    const { ctx, searchProducts } = contextoProduto([]);
+    await executeTool("buscar_produto", { termo: 'esp"umante', vinicola: 'Au"rora' }, ctx);
+    const consulta = searchProducts.mock.calls[0]![0] as string;
+    expect(consulta).not.toMatch(/[a-z]"[a-z]/);
   });
 });

@@ -30,6 +30,10 @@ export interface ShopifyProduct {
   title: string;
   handle: string;
   status: string;
+  /** Na prática é a vinícola/produtor. */
+  vendor: string | null;
+  productType: string | null;
+  tags: string[];
   onlineStoreUrl: string | null;
   totalInventory: number | null;
   description: string | null;
@@ -105,6 +109,9 @@ export class ShopifyClient {
              title
              handle
              status
+             vendor
+             productType
+             tags
              onlineStoreUrl
              totalInventory
              description(truncateAt: 600)
