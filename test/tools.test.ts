@@ -229,14 +229,38 @@ describe("buscar_produto", () => {
     expect(out.instrucao).toMatch(/NÃO empurre/);
   });
 
-  it("repassa vinícola e tipo para a consulta do Shopify", async () => {
-    const { ctx, searchProducts } = contextoProduto([produtoShopify("Aurora Moscatel", 90)]);
-    await executeTool(
-      "buscar_produto",
-      { termo: "espumante", vinicola: "Aurora", tipo: "Moscatel", preco_alvo: 90 },
-      ctx,
+  it("manda o tipo como busca livre, não como product_type", async () => {
+    // A loja não preenche o campo Tipo do Shopify: filtrar por product_type
+    // devolveria zero resultado sempre. O estilo vive no título e nas tags,
+    // que a busca livre alcança.
+    const alvo = produtoShopify("Aurora Moscatel", 90, {
+      vendor: "Aurora",
+      productType: null,
+      tags: ["Moscatel"],
+    });
+    const { ctx, searchProducts } = contextoProduto([alvo]);
+    const out = JSON.parse(
+      await executeTool(
+        "buscar_produto",
+        { termo: "espumante", vinicola: "Aurora", tipo: "Moscatel", preco_alvo: 90 },
+        ctx,
+      ),
     );
-    expect(searchProducts).toHaveBeenCalledWith('espumante vendor:"Aurora" product_type:"Moscatel"', 25);
+    expect(searchProducts).toHaveBeenCalledWith('espumante Moscatel vendor:"Aurora"', 25);
+    expect(out.produtos[0].nome).toBe("Aurora Moscatel");
+  });
+
+  it("descarta o vizinho que a busca livre trouxe e não é do tipo pedido", async () => {
+    const moscatel = produtoShopify("Dalla Costa Moscatel", 90, { productType: null, tags: ["Moscatel"] });
+    const brut = produtoShopify("Dalla Costa Brut", 95, { productType: null, tags: ["Brut"] });
+    const { ctx } = contextoProduto([moscatel, brut]);
+
+    const out = JSON.parse(
+      await executeTool("buscar_produto", { termo: "espumante", tipo: "doce", preco_alvo: 90 }, ctx),
+    );
+    const nomes = out.produtos.map((p: { nome: string }) => p.nome);
+    expect(nomes).toContain("Dalla Costa Moscatel");
+    expect(nomes).not.toContain("Dalla Costa Brut");
   });
 
   it("neutraliza aspas para não quebrar a sintaxe da busca", async () => {

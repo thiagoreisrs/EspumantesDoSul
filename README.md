@@ -63,6 +63,18 @@ Assim o agente pergunta com base no estoque real, e não no genérico. Se o
 cliente já foi específico (citou rótulo, vinícola, tipo ou valor), a ferramenta
 responde direto — perguntar o que já foi dito irrita.
 
+**O estilo vem das tags, não do campo Tipo.** O catálogo da loja deixa o campo
+`Tipo` do Shopify vazio; a informação útil mora nas tags e no título. O agente
+deduz o estilo de lá, e a busca por tipo é feita em texto livre mais um filtro
+em código — filtrar por `product_type:` devolveria zero resultado sempre.
+
+A loja também marca a secura de dois jeitos, e o agente entende os dois: os
+vinhos finos levam a tag `Seco`, enquanto nos espumantes a mesma ideia aparece
+como `Brut`, `Extra Brut` ou `Nature`. Por isso o cliente pode responder
+simplesmente "seco" ou "doce" à pergunta do agente, que a busca alcança o
+catálogo inteiro. Um `Demi-Sec` nunca entra como seco, apesar de "meio seco"
+conter a palavra.
+
 **Respeita o bolso declarado.** Quem fala em R$150 não recebe sugestão de R$30.
 O corte é feito antes de o modelo ver os dados:
 

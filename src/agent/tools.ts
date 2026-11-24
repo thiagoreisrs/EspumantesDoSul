@@ -2,7 +2,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { OlistClient } from "../olist/client.js";
 import type { ShopifyClient, ShopifyOrder } from "../shopify/client.js";
 import { emailsMatch, normalizeCpf, phonesMatch } from "./policy.js";
-import { filtrarPorFaixa, levantarFacetas, montarFaixa } from "./recomendacao.js";
+import { combinaComEstilo, filtrarPorFaixa, levantarFacetas, montarFaixa } from "./recomendacao.js";
 
 /**
  * Acima disto, uma busca sem nenhum critério vira pergunta em vez de lista.
@@ -16,12 +16,19 @@ function numeroOuNulo(valor: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-/** Monta a query do Shopify. Aspas são removidas para não quebrar a sintaxe. */
+/**
+ * Monta a query do Shopify. Aspas são removidas para não quebrar a sintaxe.
+ *
+ * O tipo entra como busca livre, e NÃO como `product_type:`: a loja não
+ * preenche esse campo, então filtrar por ele devolveria zero resultado sempre.
+ * A busca livre do Shopify alcança título e tags, que é onde o estilo mora de
+ * verdade; o recorte fino fica para `combinaComEstilo`, já sobre o resultado.
+ */
 function montarConsulta(termo: string, vinicola: string, tipo: string): string {
   const limpar = (v: string) => v.replace(/["\\]/g, " ").trim();
   const partes = [limpar(termo)];
+  if (tipo) partes.push(limpar(tipo));
   if (vinicola) partes.push(`vendor:"${limpar(vinicola)}"`);
-  if (tipo) partes.push(`product_type:"${limpar(tipo)}"`);
   return partes.filter(Boolean).join(" ");
 }
 
@@ -429,14 +436,18 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
       // Busca larga de propósito: o recorte de preço é feito aqui, sobre as
       // variantes, e precisa de material para escolher.
       const produtos = await ctx.shopify.searchProducts(montarConsulta(termo, vinicola, tipo), 25);
-      const ativos = produtos.filter((p) => p.status === "ACTIVE");
+      const encontrados = produtos.filter((p) => p.status === "ACTIVE");
+      // A busca livre traz vizinhos; o estilo pedido é aplicado aqui.
+      const ativos = tipo ? encontrados.filter((p) => combinaComEstilo(p, tipo)) : encontrados;
 
       if (ativos.length === 0) {
         return JSON.stringify({
           encontrado: false,
+          motivo: tipo && encontrados.length > 0 ? "nenhum_desse_tipo" : "nada_encontrado",
+          tipos_disponiveis: encontrados.length > 0 ? levantarFacetas(encontrados).tipos : [],
           instrucao:
             "Nada no catálogo com esses critérios. Diga que não encontrou e ofereça ajuda para achar algo parecido, " +
-            "sem inventar rótulos e sem prometer que vai chegar.",
+            "sem inventar rótulos e sem prometer que vai chegar. Se houver tipos_disponiveis, ofereça esses.",
         });
       }
 

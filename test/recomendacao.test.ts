@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  classificarEstilos,
+  combinaComEstilo,
   filtrarPorFaixa,
   levantarFacetas,
   montarFaixa,
@@ -176,5 +178,135 @@ describe("levantarFacetas", () => {
     ]);
     expect(facetas.precoMin).toBe(100);
     expect(facetas.precoMax).toBe(100);
+  });
+});
+
+// ------------------------------------------------------------- estilos --
+
+/** Produto real da loja: o campo "Tipo" do Shopify vem vazio. */
+const DALLA_COSTA_MOSCATEL = produto("Dalla Costa Espumante Moscatel", [{ preco: 89 }], {
+  vendor: "Dalla Costa",
+  productType: null,
+  tags: ["Vinho Espumante", "Moscato", "Moscatel", "Dalla Costa", "Branco", "750ml"],
+});
+
+describe("classificarEstilos", () => {
+  it("classifica mesmo com o campo Tipo do Shopify vazio", () => {
+    // Regressão: a loja não preenche productType. Se dependêssemos dele, o
+    // agente não teria nenhum tipo para oferecer ao perguntar.
+    expect(DALLA_COSTA_MOSCATEL.productType).toBeNull();
+    expect(classificarEstilos(DALLA_COSTA_MOSCATEL)).toContain("Moscatel");
+  });
+
+  it("lê o estilo do nome do produto quando não há tag", () => {
+    const p = produto("Aurora Espumante Brut", [{ preco: 70 }], { productType: null, tags: [] });
+    expect(classificarEstilos(p)).toContain("Brut");
+  });
+
+  it("não duplica Brut quando o rótulo é Extra Brut ou Nature", () => {
+    const extra = produto("Casa Valduga Extra Brut", [{ preco: 120 }], { productType: null, tags: [] });
+    expect(classificarEstilos(extra)).toContain("Extra Brut");
+    expect(classificarEstilos(extra)).not.toContain("Brut");
+
+    const nature = produto("Espumante Brut Nature", [{ preco: 140 }], { productType: null, tags: [] });
+    expect(classificarEstilos(nature)).toContain("Nature");
+    expect(classificarEstilos(nature)).not.toContain("Brut");
+  });
+
+  it("entende moscatéis acentuado e plural", () => {
+    const p = produto("Espumante", [{ preco: 60 }], { productType: null, tags: ["Espumantes Moscatéis"] });
+    expect(classificarEstilos(p)).toContain("Moscatel");
+  });
+});
+
+describe("combinaComEstilo", () => {
+  const brut = produto("Aurora Brut", [{ preco: 90 }], { productType: null, tags: ["Brut"] });
+  const demiSec = produto("Garibaldi Demi-Sec", [{ preco: 70 }], { productType: null, tags: ["Demi-Sec"] });
+
+  it("traduz 'seco' do cliente para a família Brut", () => {
+    // Nenhum rótulo seco diz "seco"; só o demi-sec se identifica. Sem esta
+    // tradução, a resposta mais provável do cliente devolveria zero produto.
+    expect(combinaComEstilo(brut, "seco")).toBe(true);
+    expect(combinaComEstilo(DALLA_COSTA_MOSCATEL, "seco")).toBe(false);
+  });
+
+  it("nunca entrega um demi-sec a quem pediu seco", () => {
+    // "seco" é substring de "meio seco": sem tratamento, casaria com o oposto.
+    expect(combinaComEstilo(demiSec, "seco")).toBe(false);
+  });
+
+  it("traduz 'doce' para moscatel e demi-sec", () => {
+    expect(combinaComEstilo(DALLA_COSTA_MOSCATEL, "doce")).toBe(true);
+    expect(combinaComEstilo(demiSec, "adocicado")).toBe(true);
+    expect(combinaComEstilo(brut, "doce")).toBe(false);
+  });
+
+  it("aceita o nome técnico do estilo", () => {
+    expect(combinaComEstilo(DALLA_COSTA_MOSCATEL, "Moscatel")).toBe(true);
+    expect(combinaComEstilo(DALLA_COSTA_MOSCATEL, "moscato")).toBe(true);
+    expect(combinaComEstilo(brut, "Brut")).toBe(true);
+  });
+
+  it("cai no título e nas tags para palavra fora do vocabulário", () => {
+    expect(combinaComEstilo(DALLA_COSTA_MOSCATEL, "750ml")).toBe(true);
+    expect(combinaComEstilo(brut, "750ml")).toBe(false);
+  });
+
+  it("sem estilo pedido, não filtra nada", () => {
+    expect(combinaComEstilo(brut, "")).toBe(true);
+  });
+});
+
+describe("levantarFacetas com catálogo real", () => {
+  it("tira os tipos das tags, já que o campo Tipo vem vazio", () => {
+    const facetas = levantarFacetas([
+      DALLA_COSTA_MOSCATEL,
+      produto("Aurora Brut", [{ preco: 70 }], { vendor: "Aurora", productType: null, tags: ["Brut"] }),
+    ]);
+    expect(facetas.tipos).toEqual(["Branco", "Brut", "Moscatel"]);
+    expect(facetas.vinicolas).toEqual(["Aurora", "Dalla Costa"]);
+  });
+});
+
+// -------------------------------------------------- seco: tag e sinônimo --
+
+/** Vinho fino real da loja: a secura está na tag, não no título. */
+const GUATAMBU_TINTO = produto("Guatambu Épico IX", [{ preco: 189 }], {
+  vendor: "Guatambu",
+  productType: null,
+  tags: ["Vinho Fino", "Tinto", "Seco"],
+});
+
+describe("Seco como estilo próprio", () => {
+  it("lê a tag Seco dos vinhos finos, mesmo sem nada no título", () => {
+    const estilos = classificarEstilos(GUATAMBU_TINTO);
+    expect(estilos).toContain("Seco");
+    expect(estilos).toContain("Tinto");
+  });
+
+  it("não marca um demi-sec como seco", () => {
+    // "meio seco" contém "seco"; sem tratamento, o oposto casaria.
+    const meioSeco = produto("Espumante Meio Seco", [{ preco: 60 }], { productType: null, tags: ["Meio Seco"] });
+    const estilos = classificarEstilos(meioSeco);
+    expect(estilos).toContain("Demi-Sec");
+    expect(estilos).not.toContain("Seco");
+  });
+
+  it("'seco' do cliente alcança tanto o vinho fino quanto o espumante brut", () => {
+    // A loja marca a mesma ideia de dois jeitos: tag "Seco" nos vinhos finos,
+    // Brut/Nature nos espumantes. A pergunta do agente é uma só.
+    const brut = produto("Aurora Brut", [{ preco: 90 }], { productType: null, tags: ["Brut"] });
+    expect(combinaComEstilo(GUATAMBU_TINTO, "seco")).toBe(true);
+    expect(combinaComEstilo(brut, "seco")).toBe(true);
+    expect(combinaComEstilo(DALLA_COSTA_MOSCATEL, "seco")).toBe(false);
+  });
+
+  it("quem pede doce não recebe o tinto seco", () => {
+    expect(combinaComEstilo(GUATAMBU_TINTO, "doce")).toBe(false);
+  });
+
+  it("aceita 'tinto' e 'Seco' como termo direto", () => {
+    expect(combinaComEstilo(GUATAMBU_TINTO, "tinto")).toBe(true);
+    expect(combinaComEstilo(GUATAMBU_TINTO, "Seco")).toBe(true);
   });
 });

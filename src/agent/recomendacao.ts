@@ -157,6 +157,99 @@ export function filtrarPorFaixa(
   return { dentro: dentro.slice(0, limite), descartadosPorPreco, maisProximoAbaixo };
 }
 
+/**
+ * Estilos que o cliente de fato reconhece e pede. A ordem importa: o mais
+ * específico vem primeiro, porque "Extra Brut" e "Brut Nature" contêm "brut".
+ */
+const ESTILOS: Array<{ rotulo: string; termos: string[] }> = [
+  { rotulo: "Nature", termos: ["brut nature", "nature"] },
+  { rotulo: "Extra Brut", termos: ["extra brut"] },
+  { rotulo: "Brut", termos: ["brut"] },
+  { rotulo: "Demi-Sec", termos: ["demi-sec", "demi sec", "meio seco", "meio-seco"] },
+  // Nos vinhos finos a secura é marcada assim, na tag e às vezes no título.
+  // Nos espumantes ela aparece como Brut/Extra Brut/Nature.
+  { rotulo: "Seco", termos: ["seco"] },
+  // "moscat" cobre moscatel, moscato e a forma plural moscatéis das coleções.
+  { rotulo: "Moscatel", termos: ["moscat"] },
+  { rotulo: "Prosecco", termos: ["prosecco"] },
+  { rotulo: "Rosé", termos: ["rose"] },
+  { rotulo: "Tinto", termos: ["tinto"] },
+  { rotulo: "Branco", termos: ["branco"] },
+];
+
+function semAcento(valor: string): string {
+  return valor
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+/**
+ * Deduz o estilo do produto.
+ *
+ * A loja não preenche o campo `productType` do Shopify — ele vem vazio em
+ * catálogo real. A informação de estilo mora nas tags ("Moscatel", "Moscato")
+ * e no próprio título ("Dalla Costa Espumante Moscatel"), então é de lá que a
+ * lemos. Confiar em `productType` deixaria o agente sem nada para oferecer na
+ * hora de perguntar "seco ou doce?".
+ */
+export function classificarEstilos(produto: ShopifyProduct): string[] {
+  const fonte = semAcento([produto.title, produto.productType ?? "", ...produto.tags].join(" | "));
+
+  const achados: string[] = [];
+  for (const { rotulo, termos } of ESTILOS) {
+    if (termos.some((t) => fonte.includes(semAcento(t)))) achados.push(rotulo);
+  }
+
+  // "meio seco" contém "seco": sem isto, um demi-sec entraria como seco, que é
+  // justamente o oposto.
+  const semContradicao = achados.includes("Demi-Sec") ? achados.filter((e) => e !== "Seco") : achados;
+
+  // "Extra Brut" e "Nature" são tipos de brut; manter os dois confundiria.
+  if (semContradicao.includes("Nature") || semContradicao.includes("Extra Brut")) {
+    return semContradicao.filter((e) => e !== "Brut");
+  }
+  return semContradicao;
+}
+
+/**
+ * Como o cliente fala, traduzido para o que o rótulo diz.
+ *
+ * O cliente responde "seco" ou "doce" — é assim que o agente pergunta. Mas a
+ * loja marca isso de dois jeitos diferentes: os vinhos finos levam a tag
+ * "Seco", enquanto nos espumantes a mesma ideia aparece como Brut, Extra Brut
+ * ou Nature. Sem esta tradução, a resposta mais provável do cliente traria só
+ * metade do catálogo que serve para ele.
+ */
+const SINONIMOS: Array<{ termos: string[]; estilos: string[] }> = [
+  {
+    termos: ["seco", "mais seco", "bem seco", "dry", "menos doce", "nao doce"],
+    estilos: ["Seco", "Brut", "Extra Brut", "Nature"],
+  },
+  { termos: ["doce", "docinho", "adocicado", "mais doce", "suave", "dulce"], estilos: ["Moscatel", "Demi-Sec"] },
+];
+
+/** O estilo pedido pelo cliente bate com o que o produto é? */
+export function combinaComEstilo(produto: ShopifyProduct, estiloPedido: string): boolean {
+  const pedido = semAcento(estiloPedido).trim();
+  if (!pedido) return true;
+
+  const estilos = classificarEstilos(produto);
+
+  // Sinônimo decide sozinho: "seco" NÃO pode cair na rede de segurança abaixo
+  // e casar com "meio seco", que é justamente o oposto.
+  const grupo = SINONIMOS.find((g) => g.termos.some((t) => t === pedido));
+  if (grupo) return estilos.some((e) => grupo.estilos.includes(e));
+
+  const normalizados = estilos.map(semAcento);
+  if (normalizados.some((e) => e === pedido || e.includes(pedido) || pedido.includes(e))) return true;
+
+  // Rede de segurança: o cliente pode usar uma palavra que não está no
+  // vocabulário, mas que aparece no título ou nas tags do produto.
+  const fonte = semAcento([produto.title, ...produto.tags].join(" | "));
+  return fonte.includes(pedido);
+}
+
 export interface Facetas {
   vinicolas: string[];
   tipos: string[];
@@ -178,7 +271,7 @@ export function levantarFacetas(produtos: ShopifyProduct[]): Facetas {
   for (const produto of produtos) {
     if (produto.status !== "ACTIVE") continue;
     if (produto.vendor) vinicolas.add(produto.vendor);
-    if (produto.productType) tipos.add(produto.productType);
+    for (const estilo of classificarEstilos(produto)) tipos.add(estilo);
     for (const variante of produto.variants.nodes) {
       if (!variante.availableForSale) continue;
       const preco = Number(variante.price);
