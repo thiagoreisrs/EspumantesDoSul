@@ -39,6 +39,15 @@ export interface ShopifyProduct {
   description: string | null;
   priceRangeV2: { minVariantPrice: { amount: string; currencyCode: string } };
   variants: { nodes: Array<{ title: string; sku: string | null; price: string; availableForSale: boolean; inventoryQuantity: number | null }> };
+  metafields?: { nodes: ShopifyMetafield[] };
+}
+
+export interface ShopifyMetafield {
+  namespace: string;
+  key: string;
+  /** Listas vêm como JSON (["Celebração","Inverno"]); escalares, como texto puro. */
+  value: string;
+  type: string;
 }
 
 const ORDER_FIELDS = `
@@ -117,6 +126,7 @@ export class ShopifyClient {
              description(truncateAt: 600)
              priceRangeV2 { minVariantPrice { amount currencyCode } }
              variants(first: 10) { nodes { title sku price availableForSale inventoryQuantity } }
+             metafields(first: 40) { nodes { namespace key value type } }
            }
          }
        }`,

@@ -2,7 +2,8 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { OlistClient } from "../olist/client.js";
 import type { ShopifyClient, ShopifyOrder } from "../shopify/client.js";
 import { emailsMatch, normalizeCpf, phonesMatch } from "./policy.js";
-import { combinaComEstilo, filtrarPorFaixa, levantarFacetas, montarFaixa } from "./recomendacao.js";
+import { bandaDocura, combinaComEstilo, combinaComTexto, filtrarPorFaixa, levantarFacetas, montarFaixa } from "./recomendacao.js";
+import { lerMetacampos } from "../shopify/metacampos.js";
 
 /**
  * Acima disto, uma busca sem nenhum critério vira pergunta em vez de lista.
@@ -140,7 +141,23 @@ export const TOOL_DEFINITIONS: Anthropic.Beta.BetaTool[] = [
         },
         tipo: {
           type: "string",
-          description: "Tipo do produto, se o cliente indicou. Ex.: 'Brut', 'Moscatel', 'Nature', 'Rosé'.",
+          description:
+            "Estilo, se o cliente indicou. Aceita como o cliente fala ('seco', 'doce') e também o nome técnico " +
+            "('Brut', 'Moscatel', 'Nature', 'Rosé', 'Tinto', 'Branco').",
+        },
+        ocasiao: {
+          type: "string",
+          description:
+            "Ocasião, quando o cliente disser para que é. Ex.: 'Celebração', 'Jantar Especial', 'Presente'.",
+        },
+        harmonizacao: {
+          type: "string",
+          description:
+            "Prato ou comida que o cliente citou, para indicar o que harmoniza. Ex.: 'costela', 'salmão', 'sobremesa'.",
+        },
+        uva: {
+          type: "string",
+          description: "Uva ou casta, se o cliente indicou. Ex.: 'Tannat', 'Chardonnay', 'Merlot'.",
         },
       },
       required: ["termo"],
@@ -427,6 +444,9 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
 
       const vinicola = input.vinicola ? String(input.vinicola).trim() : "";
       const tipo = input.tipo ? String(input.tipo).trim() : "";
+      const ocasiao = input.ocasiao ? String(input.ocasiao).trim() : "";
+      const harmonizacao = input.harmonizacao ? String(input.harmonizacao).trim() : "";
+      const uva = input.uva ? String(input.uva).trim() : "";
       const faixa = montarFaixa({
         precoAlvo: numeroOuNulo(input.preco_alvo),
         precoMin: numeroOuNulo(input.preco_min),
@@ -437,8 +457,15 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
       // variantes, e precisa de material para escolher.
       const produtos = await ctx.shopify.searchProducts(montarConsulta(termo, vinicola, tipo), 25);
       const encontrados = produtos.filter((p) => p.status === "ACTIVE");
-      // A busca livre traz vizinhos; o estilo pedido é aplicado aqui.
-      const ativos = tipo ? encontrados.filter((p) => combinaComEstilo(p, tipo)) : encontrados;
+      // A busca livre traz vizinhos; os critérios finos são aplicados aqui,
+      // sobre os metacampos, que é onde a ficha do vinho realmente está.
+      const ativos = encontrados.filter(
+        (p) =>
+          (!tipo || combinaComEstilo(p, tipo)) &&
+          (!ocasiao || combinaComTexto(p, "ocasioes", ocasiao)) &&
+          (!harmonizacao || combinaComTexto(p, "harmonizacoes", harmonizacao)) &&
+          (!uva || combinaComTexto(p, "uvas", uva)),
+      );
 
       if (ativos.length === 0) {
         return JSON.stringify({
@@ -455,13 +482,14 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
 
       // Sem nenhum critério e com catálogo largo, indicar agora é chutar.
       // Devolvemos o que existe para o agente perguntar com conhecimento.
-      const semCriterio = !faixa && !vinicola && !tipo;
+      const semCriterio = !faixa && !vinicola && !tipo && !ocasiao && !harmonizacao && !uva;
       if (semCriterio && ativos.length > LIMIAR_QUALIFICACAO) {
         return JSON.stringify({
           precisa_qualificar: true,
           encontrados: ativos.length,
           vinicolas_disponiveis: facetas.vinicolas,
           tipos_disponiveis: facetas.tipos,
+          ocasioes_disponiveis: facetas.ocasioes,
           faixa_de_preco_no_catalogo: { min: facetas.precoMin, max: facetas.precoMax },
           instrucao:
             "NÃO liste produtos ainda. São muitas opções e você não sabe o que o cliente quer. " +
@@ -491,20 +519,37 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
         encontrado: true,
         faixa_aplicada: faixa ? { piso: faixa.piso, teto: faixa.teto } : null,
         descartados_por_preco: descartadosPorPreco,
-        produtos: dentro.map(({ produto, variante }) => ({
-          nome: produto.title,
-          vinicola: produto.vendor,
-          tipo: produto.productType,
-          preco: variante.preco,
-          moeda: produto.priceRangeV2.minVariantPrice.currencyCode,
-          opcao: variante.nome,
-          sku: variante.sku,
-          link: produto.onlineStoreUrl,
-          descricao: produto.description,
-        })),
+        produtos: dentro.map(({ produto, variante }) => {
+          const meta = lerMetacampos(produto);
+          return {
+            nome: produto.title,
+            vinicola: produto.vendor,
+            tipo: meta.tipo ?? produto.productType,
+            preco: variante.preco,
+            moeda: produto.priceRangeV2.minVariantPrice.currencyCode,
+            opcao: variante.nome,
+            sku: variante.sku,
+            link: produto.onlineStoreUrl,
+            descricao: produto.description,
+            // Ficha para a resposta ficar concreta: o cliente quer saber com o
+            // que combina e a que temperatura servir, não só o preço.
+            docura: meta.docuraTexto,
+            docura_faixa: bandaDocura(produto),
+            uvas: meta.uvas,
+            regiao: meta.regiao,
+            temperatura: meta.temperatura,
+            harmoniza_com: meta.harmonizacoes,
+            ocasioes: meta.ocasioes,
+            corpo: meta.corpo,
+            acidez: meta.acidez,
+            outros_dados: meta.ficha,
+          };
+        }),
         instrucao:
           "Indique no máximo três destes, começando pelo primeiro — já vêm ordenados pela proximidade do que o " +
-          "cliente pediu. Diga o preço de cada um. Não cite produto que não esteja nesta lista.",
+          "cliente pediu. Diga o preço de cada um. Use a ficha (uvas, região, harmonização, temperatura) para " +
+          "justificar a indicação em uma frase, quando couber. Não cite produto que não esteja nesta lista, e não " +
+          "invente dado que não esteja na ficha.",
       });
     }
 

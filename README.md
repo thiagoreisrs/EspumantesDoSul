@@ -45,7 +45,7 @@ os dois: o Chatwoot expõe webhooks de *Agent Bot* e uma API REST, e este servi�
 |---|---|---|
 | `buscar_pedido` | Status, itens, valor e pagamento de um pedido | Shopify, com fallback no ERP |
 | `rastrear_entrega` | Transportadora, código e link de rastreio | Shopify + Olist |
-| `buscar_produto` | Indicação filtrada por faixa de preço, vinícola e tipo | Shopify |
+| `buscar_produto` | Indicação filtrada por preço, vinícola, estilo, ocasião, prato e uva | Shopify |
 | `consultar_estoque` | Saldo real em estoque | Olist |
 | `escalar_para_humano` | Transfere com motivo e resumo | — |
 | `nao_responder` | Encerra em silêncio (spam, engano de número) | — |
@@ -63,7 +63,33 @@ Assim o agente pergunta com base no estoque real, e não no genérico. Se o
 cliente já foi específico (citou rótulo, vinícola, tipo ou valor), a ferramenta
 responde direto — perguntar o que já foi dito irrita.
 
-**O estilo vem das tags, não do campo Tipo.** O catálogo da loja deixa o campo
+**A ficha do vinho vem dos metacampos.** É lá que a loja mantém o dado bom:
+`Tipo`, `Doçura` (texto e nível), `Ocasião`, `Harmonização`, `Uvas`, `Região`,
+`Temperatura`, `Corpo`, `Acidez`. O agente filtra por ocasião, prato e uva, e
+recebe o restante junto com cada indicação, para justificar a escolha em uma
+frase em vez de recitar nome e preço.
+
+A leitura não depende dos nomes técnicos das definições: busca todos os
+metacampos do produto e casa pela chave normalizada. O que não é reconhecido
+não é descartado — vai para `outros_dados`, onde ainda serve para responder,
+mesmo sem servir de filtro. Se a loja criar um metacampo novo, ele aparece
+sozinho.
+
+Quem responde "seco ou doce?" é o metacampo de doçura, e o **nível numérico
+decide na frente do texto**: é dado estruturado e comparável entre produtos,
+enquanto o texto é escrito à mão. A escala vai de 0 a 100 — até 25 é seco, de
+45 para cima é doce, e o meio é demi-sec. Os limiares ficam em
+`src/agent/recomendacao.ts`.
+
+O casamento é assimétrico de propósito: quem pede **doce** também recebe
+demi-sec, mas quem pede **seco** nunca recebe. Errar para o lado doce estraga o
+brinde; para o lado seco, não decepciona ninguém.
+
+Uma ressalva de vocabulário: a loja usa `Doçura: Brut` até em tinto. Esse campo
+responde "seco ou doce?", mas **não** entra como estilo — quem pede "um brut"
+no WhatsApp quer espumante, não um Tannat encorpado.
+
+**O estilo também vem das tags, para quem não tem metacampo.** O catálogo da loja deixa o campo
 `Tipo` do Shopify vazio; a informação útil mora nas tags e no título. O agente
 deduz o estilo de lá, e a busca por tipo é feita em texto livre mais um filtro
 em código — filtrar por `product_type:` devolveria zero resultado sempre.
@@ -334,6 +360,7 @@ src/
     handler.ts           orquestração, entrega e handoff
   chatwoot/              cliente da API + tipos do webhook
   shopify/               cliente GraphQL Admin
+    metacampos.ts        ficha do vinho (doçura, ocasião, harmonização, uvas)
   olist/                 cliente API v3 + OAuth com rotação de refresh token
   conversation/
     history.ts           histórico do Chatwoot → mensagens da API
