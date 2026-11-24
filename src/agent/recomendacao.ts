@@ -228,7 +228,13 @@ export function classificarEstilos(produto: ShopifyProduct): string[] {
  * ou Nature. Sem esta tradução, a resposta mais provável do cliente traria só
  * metade do catálogo que serve para ele.
  */
-const SINONIMOS: Array<{ rotulo: "seco" | "doce"; termos: string[]; estilos: string[] }> = [
+const SINONIMOS: Array<{ rotulo: BandaDocura; termos: string[]; estilos: string[] }> = [
+  // O meio-termo vem primeiro: "meio seco" e "meio doce" contêm os outros dois.
+  {
+    rotulo: "meio",
+    termos: ["meio doce", "meio-doce", "meio seco", "meio-seco", "demi", "demi-sec", "nem seco nem doce", "intermediario"],
+    estilos: ["Demi-Sec"],
+  },
   {
     rotulo: "seco",
     termos: ["seco", "mais seco", "bem seco", "dry", "menos doce", "nao doce"],
@@ -241,42 +247,69 @@ const SINONIMOS: Array<{ rotulo: "seco" | "doce"; termos: string[]; estilos: str
   },
 ];
 
-/** Vocabulário que a loja usa no metacampo de doçura, do mais seco ao mais doce. */
-const DOCURA_SECA = ["nature", "extra brut", "brut", "seco"];
-const DOCURA_DOCE = ["moscatel", "moscato", "demi", "suave", "doce", "meio seco"];
+export type BandaDocura = "seco" | "meio" | "doce";
 
 /**
- * Limiares da escala numérica de doçura da loja (0 a 100; o Guatambu seco
- * marca 5). O texto é consultado antes, porque é o dado que a loja escreve à
- * mão; estes números são a segunda opção e o ponto a ajustar se a escala
- * mudar.
+ * Vocabulário do metacampo de doçura. O meio-termo é testado primeiro: "meio
+ * seco" contém "seco" e "meio doce" contém "doce".
+ */
+const DOCURA_MEIO = ["demi", "meio seco", "meio-seco", "meio doce", "meio-doce"];
+const DOCURA_SECA = ["nature", "extra brut", "brut", "seco"];
+const DOCURA_DOCE = ["moscatel", "moscato", "suave", "doce"];
+
+/**
+ * Limiares da escala de doçura da loja, de 0 a 100 — o Guatambu seco marca 5,
+ * e os campos vizinhos (Corpo 85, Complexidade 90) confirmam o topo. É aqui
+ * que se ajusta a sensibilidade de "seco" e "doce".
  */
 const DOCURA_NIVEL_SECO = 25;
 const DOCURA_NIVEL_DOCE = 45;
 
 /**
- * Responde "seco ou doce?" pelo metacampo de doçura, que é a fonte boa.
- * Devolve null quando o produto não tem o dado — aí quem decide é a tag.
+ * Em que faixa de doçura o rótulo está, segundo a ficha da loja.
+ *
+ * O nível numérico decide primeiro: é dado estruturado e comparável entre
+ * produtos, enquanto o texto é escrito à mão e mistura vocabulários — a loja
+ * usa "Brut" até em tinto. O texto fica para quem ainda não tem o nível
+ * preenchido.
+ *
+ * Devolve null quando o produto não tem nenhum dos dois: aí quem decide é a
+ * tag ou o título.
  */
-function docuraCombina(produto: ShopifyProduct, querSeco: "seco" | "doce"): boolean | null {
+export function bandaDocura(produto: ShopifyProduct): BandaDocura | null {
   const meta = lerMetacampos(produto);
+
+  if (meta.docuraNivel !== null) {
+    if (meta.docuraNivel <= DOCURA_NIVEL_SECO) return "seco";
+    if (meta.docuraNivel >= DOCURA_NIVEL_DOCE) return "doce";
+    return "meio";
+  }
 
   if (meta.docuraTexto) {
     const texto = semAcento(meta.docuraTexto);
-    const ehSeco = DOCURA_SECA.some((t) => texto.includes(semAcento(t)));
-    const ehDoce = DOCURA_DOCE.some((t) => texto.includes(semAcento(t)));
-    // "meio seco" contém "seco": doce vence, porque é o mais específico.
-    if (ehDoce) return querSeco === "doce";
-    if (ehSeco) return querSeco === "seco";
-  }
-
-  if (meta.docuraNivel !== null) {
-    if (meta.docuraNivel <= DOCURA_NIVEL_SECO) return querSeco === "seco";
-    if (meta.docuraNivel >= DOCURA_NIVEL_DOCE) return querSeco === "doce";
-    return false; // meio-termo não é nem uma coisa nem outra
+    const casa = (termos: string[]) => termos.some((t) => texto.includes(semAcento(t)));
+    if (casa(DOCURA_MEIO)) return "meio";
+    if (casa(DOCURA_DOCE)) return "doce";
+    if (casa(DOCURA_SECA)) return "seco";
   }
 
   return null;
+}
+
+/**
+ * Faixas aceitáveis para cada pedido do cliente. A assimetria é de propósito:
+ * quem pede doce não se incomoda com um demi-sec, mas quem pede seco se
+ * incomoda muito — errar para o lado doce estraga o brinde.
+ */
+const ACEITAVEIS: Record<BandaDocura, BandaDocura[]> = {
+  seco: ["seco"],
+  meio: ["meio"],
+  doce: ["doce", "meio"],
+};
+
+function docuraCombina(produto: ShopifyProduct, querida: BandaDocura): boolean | null {
+  const banda = bandaDocura(produto);
+  return banda === null ? null : ACEITAVEIS[querida].includes(banda);
 }
 
 /** O produto serve para a ocasião, o prato ou a uva que o cliente citou? */

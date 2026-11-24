@@ -175,3 +175,37 @@ describe("combinaComTexto", () => {
     expect(combinaComTexto(comFicha("Sem ficha", []), "ocasioes", "celebração")).toBe(false);
   });
 });
+
+describe("escala numérica de doçura", () => {
+  const nivel = (valor: number) => comFicha(`N${valor}`, [numero("docura_nivel", valor)]);
+
+  it("o nível decide na frente do texto quando os dois existem", () => {
+    // O número é dado estruturado e comparável; o texto é escrito à mão e
+    // mistura vocabulários. Aqui a ficha diz 90 e o texto diz "Brut".
+    const divergente = comFicha("Divergente", [texto("docura_texto", "Brut"), numero("docura_nivel", 90)]);
+    expect(combinaComEstilo(divergente, "doce")).toBe(true);
+    expect(combinaComEstilo(divergente, "seco")).toBe(false);
+  });
+
+  it("separa as três faixas da escala", () => {
+    expect(combinaComEstilo(nivel(5), "seco")).toBe(true);
+    expect(combinaComEstilo(nivel(35), "meio doce")).toBe(true);
+    expect(combinaComEstilo(nivel(80), "doce")).toBe(true);
+  });
+
+  it("o meio-termo nunca é entregue a quem pediu seco", () => {
+    expect(combinaComEstilo(nivel(35), "seco")).toBe(false);
+  });
+
+  it("mas é aceito por quem pediu doce", () => {
+    // Quem pede doce não se incomoda com um demi-sec; quem pede seco, sim.
+    expect(combinaComEstilo(nivel(35), "doce")).toBe(true);
+  });
+
+  it("um demi-sec responde a 'meio doce' e a 'demi'", () => {
+    const demi = comFicha("Demi", [texto("docura_texto", "Demi-Sec")]);
+    expect(combinaComEstilo(demi, "meio doce")).toBe(true);
+    expect(combinaComEstilo(demi, "demi")).toBe(true);
+    expect(combinaComEstilo(demi, "seco")).toBe(false);
+  });
+});

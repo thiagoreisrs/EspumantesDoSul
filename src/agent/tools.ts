@@ -2,7 +2,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { OlistClient } from "../olist/client.js";
 import type { ShopifyClient, ShopifyOrder } from "../shopify/client.js";
 import { emailsMatch, normalizeCpf, phonesMatch } from "./policy.js";
-import { combinaComEstilo, combinaComTexto, filtrarPorFaixa, levantarFacetas, montarFaixa } from "./recomendacao.js";
+import { bandaDocura, combinaComEstilo, combinaComTexto, filtrarPorFaixa, levantarFacetas, montarFaixa } from "./recomendacao.js";
 import { lerMetacampos } from "../shopify/metacampos.js";
 
 /**
@@ -534,6 +534,7 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
             // Ficha para a resposta ficar concreta: o cliente quer saber com o
             // que combina e a que temperatura servir, não só o preço.
             docura: meta.docuraTexto,
+            docura_faixa: bandaDocura(produto),
             uvas: meta.uvas,
             regiao: meta.regiao,
             temperatura: meta.temperatura,

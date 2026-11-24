@@ -75,9 +75,19 @@ não é descartado — vai para `outros_dados`, onde ainda serve para responder,
 mesmo sem servir de filtro. Se a loja criar um metacampo novo, ele aparece
 sozinho.
 
-Uma ressalva de vocabulário: a loja usa `Doçura: Brut` até em tinto, como nível
-de doçura. Esse campo responde "seco ou doce?", mas **não** entra como estilo —
-quem pede "um brut" no WhatsApp quer espumante, não um Tannat encorpado.
+Quem responde "seco ou doce?" é o metacampo de doçura, e o **nível numérico
+decide na frente do texto**: é dado estruturado e comparável entre produtos,
+enquanto o texto é escrito à mão. A escala vai de 0 a 100 — até 25 é seco, de
+45 para cima é doce, e o meio é demi-sec. Os limiares ficam em
+`src/agent/recomendacao.ts`.
+
+O casamento é assimétrico de propósito: quem pede **doce** também recebe
+demi-sec, mas quem pede **seco** nunca recebe. Errar para o lado doce estraga o
+brinde; para o lado seco, não decepciona ninguém.
+
+Uma ressalva de vocabulário: a loja usa `Doçura: Brut` até em tinto. Esse campo
+responde "seco ou doce?", mas **não** entra como estilo — quem pede "um brut"
+no WhatsApp quer espumante, não um Tannat encorpado.
 
 **O estilo também vem das tags, para quem não tem metacampo.** O catálogo da loja deixa o campo
 `Tipo` do Shopify vazio; a informação útil mora nas tags e no título. O agente
