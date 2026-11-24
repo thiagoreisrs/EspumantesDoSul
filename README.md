@@ -45,10 +45,55 @@ os dois: o Chatwoot expõe webhooks de *Agent Bot* e uma API REST, e este servi�
 |---|---|---|
 | `buscar_pedido` | Status, itens, valor e pagamento de um pedido | Shopify, com fallback no ERP |
 | `rastrear_entrega` | Transportadora, código e link de rastreio | Shopify + Olist |
-| `buscar_produto` | Nome, preço, disponibilidade e link | Shopify |
+| `buscar_produto` | Indicação filtrada por faixa de preço, vinícola e tipo | Shopify |
 | `consultar_estoque` | Saldo real em estoque | Olist |
 | `escalar_para_humano` | Transfere com motivo e resumo | — |
 | `nao_responder` | Encerra em silêncio (spam, engano de número) | — |
+
+### Como o agente indica produtos
+
+Um atendente de loja pergunta antes de indicar; um catálogo despeja lista. Duas
+regras no código mantêm o agente do lado do atendente:
+
+**Pergunta antes de indicar.** Quando a busca não tem nenhum critério — nem
+preço, nem vinícola, nem tipo — e o catálogo devolve mais de seis opções,
+`buscar_produto` não entrega produto nenhum. Devolve as vinícolas, os tipos e a
+faixa de preço que a loja de fato tem, com instrução de perguntar primeiro.
+Assim o agente pergunta com base no estoque real, e não no genérico. Se o
+cliente já foi específico (citou rótulo, vinícola, tipo ou valor), a ferramenta
+responde direto — perguntar o que já foi dito irrita.
+
+**O estilo vem das tags, não do campo Tipo.** O catálogo da loja deixa o campo
+`Tipo` do Shopify vazio; a informação útil mora nas tags e no título. O agente
+deduz o estilo de lá, e a busca por tipo é feita em texto livre mais um filtro
+em código — filtrar por `product_type:` devolveria zero resultado sempre.
+
+A loja também marca a secura de dois jeitos, e o agente entende os dois: os
+vinhos finos levam a tag `Seco`, enquanto nos espumantes a mesma ideia aparece
+como `Brut`, `Extra Brut` ou `Nature`. Por isso o cliente pode responder
+simplesmente "seco" ou "doce" à pergunta do agente, que a busca alcança o
+catálogo inteiro. Um `Demi-Sec` nunca entra como seco, apesar de "meio seco"
+conter a palavra.
+
+**Respeita o bolso declarado.** Quem fala em R$150 não recebe sugestão de R$30.
+O corte é feito antes de o modelo ver os dados:
+
+| O cliente diz | Campo | Faixa oferecida |
+|---|---|---|
+| "uns 150", "na faixa dos 150" | `preco_alvo` | R$105 a R$165 |
+| "até 150", "no máximo 150" | `preco_max` | R$105 a R$150, nunca acima |
+| "a partir de 200" | `preco_min` | R$200 para cima |
+
+Um valor aproximado abre 30% abaixo e 10% acima: o rótulo um pouco melhor
+costuma valer a pena. Um teto declarado é limite de bolso e nunca é
+ultrapassado. O ranking sai ordenado pela proximidade do que foi pedido, e o
+preço é julgado **por variante** — uma caixa de seis e a garrafa avulsa são
+variantes do mesmo produto, e julgar pelo menor preço colocaria uma caixa de
+R$600 numa conversa sobre R$150.
+
+Se nada couber na faixa, a ferramenta diz isso e manda o agente perguntar se o
+cliente quer ver outra faixa, em vez de empurrar o mais barato como se
+atendesse o pedido.
 
 ### O que impede o agente de inventar ou vazar dado
 
@@ -284,6 +329,7 @@ src/
     prompt.ts            prompt de sistema (prefixo cacheado)
     knowledge.ts         carrega knowledge/politicas.md
     tools.ts             definições, titularidade do pedido, execução
+    recomendacao.ts      faixa de preço, escolha de variante, facetas do catálogo
     run.ts               laço agêntico
     handler.ts           orquestração, entrega e handoff
   chatwoot/              cliente da API + tipos do webhook

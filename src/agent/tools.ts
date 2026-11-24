@@ -2,6 +2,35 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { OlistClient } from "../olist/client.js";
 import type { ShopifyClient, ShopifyOrder } from "../shopify/client.js";
 import { emailsMatch, normalizeCpf, phonesMatch } from "./policy.js";
+import { combinaComEstilo, filtrarPorFaixa, levantarFacetas, montarFaixa } from "./recomendacao.js";
+
+/**
+ * Acima disto, uma busca sem nenhum critério vira pergunta em vez de lista.
+ * Abaixo, listar é melhor do que interrogar quem já foi específico.
+ */
+const LIMIAR_QUALIFICACAO = 6;
+
+function numeroOuNulo(valor: unknown): number | null {
+  if (valor === null || valor === undefined || valor === "") return null;
+  const n = Number(valor);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Monta a query do Shopify. Aspas são removidas para não quebrar a sintaxe.
+ *
+ * O tipo entra como busca livre, e NÃO como `product_type:`: a loja não
+ * preenche esse campo, então filtrar por ele devolveria zero resultado sempre.
+ * A busca livre do Shopify alcança título e tags, que é onde o estilo mora de
+ * verdade; o recorte fino fica para `combinaComEstilo`, já sobre o resultado.
+ */
+function montarConsulta(termo: string, vinicola: string, tipo: string): string {
+  const limpar = (v: string) => v.replace(/["\\]/g, " ").trim();
+  const partes = [limpar(termo)];
+  if (tipo) partes.push(limpar(tipo));
+  if (vinicola) partes.push(`vendor:"${limpar(vinicola)}"`);
+  return partes.filter(Boolean).join(" ");
+}
 
 export type MotivoEscalonamento =
   | "reclamacao"
@@ -78,14 +107,40 @@ export const TOOL_DEFINITIONS: Anthropic.Beta.BetaTool[] = [
   {
     name: "buscar_produto",
     description:
-      "Busca produtos no catálogo da loja por nome, tipo, uva ou característica. " +
-      "Retorna nome, preço, disponibilidade e link. Use para recomendação, preço e dúvida sobre rótulo.",
+      "Busca produtos no catálogo da loja. Retorna nome, preço, disponibilidade e link. " +
+      "Passe tudo que o cliente já disse sobre o que procura: quanto mais filtros, melhor a indicação. " +
+      "Se o cliente ainda não disse nada além de 'quero um espumante', a ferramenta devolve as opções de " +
+      "vinícola, tipo e faixa de preço que existem no catálogo para você PERGUNTAR antes de indicar.",
     input_schema: {
       type: "object",
       properties: {
         termo: {
           type: "string",
-          description: "Termo de busca. Ex.: 'espumante brut', 'moscatel', 'Chandon', 'vinho tinto merlot'.",
+          description: "Termo de busca. Ex.: 'espumante', 'moscatel', 'Chandon', 'vinho tinto merlot'.",
+        },
+        preco_alvo: {
+          type: "number",
+          description:
+            "Valor aproximado que o cliente citou, em reais, quando ele fala de um valor central: " +
+            "'uns 150', 'em torno de 200', 'na faixa dos 100'. A busca devolve de 30% abaixo a 10% acima disso.",
+        },
+        preco_min: {
+          type: "number",
+          description: "Piso rígido em reais, quando o cliente diz 'a partir de'.",
+        },
+        preco_max: {
+          type: "number",
+          description:
+            "Teto rígido em reais, quando o cliente diz 'até X' ou 'no máximo X'. Nunca é ultrapassado. " +
+            "Use preco_alvo, e não este campo, quando o cliente citar um valor aproximado.",
+        },
+        vinicola: {
+          type: "string",
+          description: "Vinícola ou produtor, se o cliente indicou preferência.",
+        },
+        tipo: {
+          type: "string",
+          description: "Tipo do produto, se o cliente indicou. Ex.: 'Brut', 'Moscatel', 'Nature', 'Rosé'.",
         },
       },
       required: ["termo"],
@@ -370,30 +425,86 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
       const termo = String(input.termo ?? "").trim();
       if (!termo) return JSON.stringify({ encontrado: false, instrucao: "Pergunte o que o cliente procura." });
 
-      const produtos = await ctx.shopify.searchProducts(termo);
-      if (produtos.length === 0) {
+      const vinicola = input.vinicola ? String(input.vinicola).trim() : "";
+      const tipo = input.tipo ? String(input.tipo).trim() : "";
+      const faixa = montarFaixa({
+        precoAlvo: numeroOuNulo(input.preco_alvo),
+        precoMin: numeroOuNulo(input.preco_min),
+        precoMax: numeroOuNulo(input.preco_max),
+      });
+
+      // Busca larga de propósito: o recorte de preço é feito aqui, sobre as
+      // variantes, e precisa de material para escolher.
+      const produtos = await ctx.shopify.searchProducts(montarConsulta(termo, vinicola, tipo), 25);
+      const encontrados = produtos.filter((p) => p.status === "ACTIVE");
+      // A busca livre traz vizinhos; o estilo pedido é aplicado aqui.
+      const ativos = tipo ? encontrados.filter((p) => combinaComEstilo(p, tipo)) : encontrados;
+
+      if (ativos.length === 0) {
         return JSON.stringify({
           encontrado: false,
-          instrucao: "Nada no catálogo com esse termo. Ofereça ajuda para encontrar algo parecido, sem inventar rótulos.",
+          motivo: tipo && encontrados.length > 0 ? "nenhum_desse_tipo" : "nada_encontrado",
+          tipos_disponiveis: encontrados.length > 0 ? levantarFacetas(encontrados).tipos : [],
+          instrucao:
+            "Nada no catálogo com esses critérios. Diga que não encontrou e ofereça ajuda para achar algo parecido, " +
+            "sem inventar rótulos e sem prometer que vai chegar. Se houver tipos_disponiveis, ofereça esses.",
         });
       }
+
+      const facetas = levantarFacetas(ativos);
+
+      // Sem nenhum critério e com catálogo largo, indicar agora é chutar.
+      // Devolvemos o que existe para o agente perguntar com conhecimento.
+      const semCriterio = !faixa && !vinicola && !tipo;
+      if (semCriterio && ativos.length > LIMIAR_QUALIFICACAO) {
+        return JSON.stringify({
+          precisa_qualificar: true,
+          encontrados: ativos.length,
+          vinicolas_disponiveis: facetas.vinicolas,
+          tipos_disponiveis: facetas.tipos,
+          faixa_de_preco_no_catalogo: { min: facetas.precoMin, max: facetas.precoMax },
+          instrucao:
+            "NÃO liste produtos ainda. São muitas opções e você não sabe o que o cliente quer. " +
+            "Faça no máximo duas ou três perguntas curtas, numa única mensagem, em linguagem simples: " +
+            "quanto ele pensa em gastar, se prefere mais seco ou mais adocicado, e se tem vinícola preferida. " +
+            "Explique o que for jargão em poucas palavras. Só depois chame buscar_produto de novo com as respostas.",
+        });
+      }
+
+      const { dentro, descartadosPorPreco, maisProximoAbaixo } = filtrarPorFaixa(ativos, faixa);
+
+      if (dentro.length === 0) {
+        return JSON.stringify({
+          encontrado: false,
+          motivo: "nada_na_faixa",
+          faixa_buscada: faixa ? { piso: faixa.piso, teto: faixa.teto } : null,
+          opcao_mais_proxima: maisProximoAbaixo
+            ? { nome: maisProximoAbaixo.produto.title, preco: maisProximoAbaixo.variante.preco }
+            : null,
+          instrucao:
+            "Nenhum rótulo nessa faixa. Diga isso com franqueza e pergunte se ele quer ver algo de outra faixa — " +
+            "NÃO empurre o que está muito abaixo do que ele pediu como se atendesse o pedido.",
+        });
+      }
+
       return JSON.stringify({
         encontrado: true,
-        produtos: produtos
-          .filter((p) => p.status === "ACTIVE")
-          .map((p) => ({
-            nome: p.title,
-            preco_a_partir_de: `${p.priceRangeV2.minVariantPrice.amount} ${p.priceRangeV2.minVariantPrice.currencyCode}`,
-            disponivel: p.variants.nodes.some((v) => v.availableForSale),
-            link: p.onlineStoreUrl,
-            descricao: p.description,
-            variacoes: p.variants.nodes.map((v) => ({
-              nome: v.title,
-              sku: v.sku,
-              preco: v.price,
-              disponivel: v.availableForSale,
-            })),
-          })),
+        faixa_aplicada: faixa ? { piso: faixa.piso, teto: faixa.teto } : null,
+        descartados_por_preco: descartadosPorPreco,
+        produtos: dentro.map(({ produto, variante }) => ({
+          nome: produto.title,
+          vinicola: produto.vendor,
+          tipo: produto.productType,
+          preco: variante.preco,
+          moeda: produto.priceRangeV2.minVariantPrice.currencyCode,
+          opcao: variante.nome,
+          sku: variante.sku,
+          link: produto.onlineStoreUrl,
+          descricao: produto.description,
+        })),
+        instrucao:
+          "Indique no máximo três destes, começando pelo primeiro — já vêm ordenados pela proximidade do que o " +
+          "cliente pediu. Diga o preço de cada um. Não cite produto que não esteja nesta lista.",
       });
     }
 
